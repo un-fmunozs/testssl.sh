@@ -395,7 +395,7 @@ local_problem() { pr_warning "Local problem: $1"; }
 local_problem_ln() { pr_warningln "Local problem: $1"; }
 
 fixme() { pr_warning "fixme: $1"; }
-fixme() { pr_warningln "fixme: $1"; }
+fixmeln() { pr_warningln "fixme: $1"; }
 
 ### color switcher (see e.g. https://linuxtidbits.wordpress.com/2008/08/11/output-color-on-bash-scripts/
 ###                         http://www.tldp.org/HOWTO/Bash-Prompt-HOWTO/x405.html
@@ -566,9 +566,13 @@ trim_trailing_space() {
      echo "${1%%*( )}"
 }
 
-toupper() {
-     echo -n "$1" | tr 'a-z' 'A-Z'
-}
+if [[ $(uname) == "Linux" ]] ; then
+     toupper() { echo -n "${1^^}" ;  }
+     tolower() { echo -n "${1,,}" ;  }
+else
+     toupper() { echo -n "$1" | tr 'a-z' 'A-Z'; }
+     tolower() { echo -n "$1" | tr 'A-Z' 'a-z' ; }
+fi
 
 is_number() {
      [[ "$1" =~ ^[1-9][0-9]*$ ]] && \
@@ -1168,7 +1172,7 @@ run_hpkp() {
 
                # we compare now against a precompiled list of SPKIs against the ROOT CAs we have in $ca_hashes
                if ! "$certificate_found"; then
-                    hpkp_matches=$(grep -h "$hpkp_spki" $ca_hashes | sort -u)
+                    hpkp_matches=$(grep -h "$hpkp_spki" $ca_hashes 2>/dev/null | sort -u)
                     if [[ -n $hpkp_matches ]]; then
                          certificate_found=true      # root CA found
                          spki_match=true
@@ -1230,6 +1234,11 @@ run_hpkp() {
                     outln "$spaces_indented            ${backup_spki[i]}"
                fi
           done
+          if [[ ! -f "$ca_hashes" ]] && "$spki_match"; then
+               out "$spaces "
+               pr_warningln "Attribution of further hashes couldn't be done as $ca_hashes could not be found"
+               fileout "hpkp_spkimatch" "WARN" "Attribution of further hashes couldn't be done as $ca_hashes could not be found"
+          fi
 
           # If all else fails...
           if ! "$spki_match"; then
@@ -1519,7 +1528,7 @@ normalize_ciphercode() {
           HEXC="$part1$part2$part3"
      fi
 #TODO: we should just echo this and avoid the global var HEXC
-     HEXC=$(echo $HEXC | tr 'A-Z' 'a-z' | sed 's/0x/x/') #tolower + strip leading 0
+     HEXC=$(tolower "$HEXC"| sed 's/0x/x/')  # strip leading 0
      return 0
 }
 
@@ -2966,7 +2975,7 @@ run_client_simulation() {
      requiresSha2+=(false)
 
      names+=("Apple ATS 9 iOS 9          ")
-     short+=("safari_9_osx1011")
+     short+=("apple_ats_9_ios9")
      protos+=("-no_ssl2 -no_ssl3 -no_tls1 -no_tls1_1")
      ciphers+=("ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-ECDSA-AES256-SHA:ECDHE-ECDSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES128-SHA")
      tlsvers+=("-tls1_2")
@@ -3493,6 +3502,10 @@ read_dhbits_from_file() {
      # RH's backport has the DH bits in second arg after comma
      grep -q bits <<< $bits || bits=$(awk -F',' '{ print $2 }' <<< $temp)
      bits=$(tr -d ' bits' <<< $bits)
+
+     if [[ "$what_dh" == "X25519" ]] || [[ "$what_dh" == "X448" ]]; then
+          what_dh="ECDH"
+     fi
 
      debugme echo ">$HAS_DH_BITS|$what_dh|$bits<"
 
@@ -5226,8 +5239,8 @@ run_pfs() {
           # find out what elliptic curves are supported.
           curves_offered=""
           for curve in "${curves_ossl[@]}"; do
-              $OPENSSL ecparam -list_curves | grep -q $curve
-              [[ $? -eq 0 ]] && nr_curves+=1 && supported_curves+=("$curve")
+               $OPENSSL s_client -curves $curve 2>&1 | egrep -iaq "Error with command|unknown option"
+               [[ $? -ne 0 ]] && nr_curves+=1 && supported_curves+=("$curve")
           done
 
           # OpenSSL limits the number of curves that can be specified in the
@@ -5253,7 +5266,8 @@ run_pfs() {
                     fi
                     if [[ "$sclient_success" -eq 0 ]]; then
                          temp=$(awk -F': ' '/^Server Temp Key/ { print $2 }' "$tmpfile")
-                         curve_found="$(awk -F', ' '{ print $2 }' <<< $temp)"
+                         curve_found="$(awk -F',' '{ print $1 }' <<< $temp)"
+                         [[ "$curve_found" == "ECDH" ]] && curve_found="$(awk -F', ' '{ print $2 }' <<< $temp)"
                          j=0; curve_used=""
                          for curve in "${curves_ossl[@]}"; do
                               [[ "${curves_ossl_output[j]}" == "$curve_found" ]] && curve_used="${curves_ossl[j]}" && break
@@ -6545,7 +6559,7 @@ run_ccs_injection(){
           fi
           ret=1
      fi
-     [[ $retval -eq 3 ]] && out " (timed out)"
+     [[ $retval -eq 3 ]] && out ", timed out"
      outln
 
      close_socket
@@ -6620,7 +6634,7 @@ run_renego() {
           echo R | $OPENSSL s_client $OPTIMAL_PROTO $BUGS $legacycmd $STARTTLS -msg -connect $NODEIP:$PORT $addcmd $PROXY >$TMPFILE 2>>$ERRFILE &
           wait_kill $! $HEADER_MAXSLEEP
           if [[ $? -eq 3 ]]; then
-               pr_done_good "likely not vulnerable (OK)"; outln " (timed out)"       # it hung
+               pr_done_good "likely not vulnerable (OK)"; outln " timed out"         # it hung
                fileout "sec_client_renego" "OK" "Secure Client-Initiated Renegotiation : likely not vulnerable (OK) (timed out)"
                sec_client_renego=1
           else
@@ -7965,7 +7979,7 @@ get_local_aaaa() {
      local etchosts="/etc/hosts /c/Windows/System32/drivers/etc/hosts"
 
      # for security testing sometimes we have local entries. Getent is BS under Linux for localhost: No network, no resolution
-     ip6=$(grep -wh "$NODE" $etchosts 2>/dev/null | grep ':' | grep -v '^#' |  egrep  "[[:space:]]$NODE" | awk '{ print $1 }')
+     ip6=$(grep -wh "$1" $etchosts 2>/dev/null | grep ':' | egrep -v '^#|\.local' | egrep "[[:space:]]$1" | awk '{ print $1 }')
      if is_ipv6addr "$ip6"; then
           echo "$ip6"
      else
@@ -7978,7 +7992,7 @@ get_local_a() {
      local etchosts="/etc/hosts /c/Windows/System32/drivers/etc/hosts"
 
      # for security testing sometimes we have local entries. Getent is BS under Linux for localhost: No network, no resolution
-     ip4=$(grep -wh "$1[^\.]" $etchosts 2>/dev/null | egrep -v ':|^#' |  egrep  "[[:space:]]$1" | awk '{ print $1 }')
+     ip4=$(grep -wh "$1" $etchosts 2>/dev/null | egrep -v ':|^#|\.local' |  egrep "[[:space:]]$1" | awk '{ print $1 }')
      if is_ipv4addr "$ip4"; then
           echo "$ip4"
      else
@@ -9061,4 +9075,4 @@ fi
 exit $?
 
 
-#  $Id: testssl.sh,v 1.561 2016/10/29 13:37:29 dirkw Exp $
+#  $Id: testssl.sh,v 1.565 2016/12/20 13:26:11 dirkw Exp $
